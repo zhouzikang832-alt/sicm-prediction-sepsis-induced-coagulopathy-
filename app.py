@@ -6,15 +6,14 @@ import joblib
 import matplotlib.pyplot as plt
 
 # =========================
-# 页面基础设置
+# 页面设置
 # =========================
 st.set_page_config(
-    page_title="SICM Mortality Prediction with SHAP",
+    page_title="SICM Mortality Prediction",
     layout="wide"
 )
 
-st.title("🫀 Sepsis-Induced Cardiomyopathy Mortality Risk Prediction")
-st.markdown("Single-patient prediction with SHAP explanation")
+st.title("🫀 SICM Mortality Prediction with SHAP")
 
 # =========================
 # 加载模型
@@ -26,34 +25,28 @@ def load_model():
 model_pipeline = load_model()
 
 # =========================
-# 获取特征名
+# 加载特征名（关键修复点）
 # =========================
-if hasattr(model_pipeline, "feature_names_in_"):
-    feature_names = model_pipeline.feature_names_in_
-else:
-    # 兜底（不推荐，但防炸）
-    feature_names = model_pipeline.named_steps["model"].feature_name_
+@st.cache_data
+def load_feature_names():
+    with open("feature_names.txt", "r") as f:
+        return [line.strip() for line in f if line.strip()]
+
+feature_names = load_feature_names()
 
 # =========================
 # 输入区
 # =========================
-st.sidebar.header("📥 Patient Input")
+st.sidebar.header("📥 Patient Variables")
 
 input_data = {}
-
 for feat in feature_names:
-    input_data[feat] = st.sidebar.text_input(
-        label=feat,
-        value=""
-    )
+    input_data[feat] = st.sidebar.text_input(feat, "")
 
 # =========================
-# 输入清洗（关键修复点）
+# 输入清洗（防 '[3.1E-1]'）
 # =========================
 def safe_float(x):
-    """
-    把 '[3.1E-1]' / '0.3' / array([0.3]) 全部兜成 float
-    """
     if isinstance(x, str):
         x = x.strip().replace("[", "").replace("]", "")
     try:
@@ -61,29 +54,24 @@ def safe_float(x):
     except Exception:
         return np.nan
 
-# 构造 DataFrame
 X_input = pd.DataFrame([input_data])
 X_input = X_input.applymap(safe_float)
 
 # =========================
-# 预测 & SHAP
+# 预测 + SHAP
 # =========================
 if st.button("🔍 Predict & Explain"):
 
     try:
-        # -------- 预测 --------
+        # ---------- 预测 ----------
         prob = model_pipeline.predict_proba(X_input)[0, 1]
 
-        st.subheader("📊 Prediction Result")
-        st.metric(
-            label="Predicted Mortality Risk",
-            value=f"{prob:.3f}"
-        )
+        st.subheader("📊 Prediction")
+        st.metric("Mortality Risk", f"{prob:.3f}")
 
-        # -------- SHAP 解释 --------
-        st.subheader("🧠 SHAP Explanation (Single Patient)")
+        # ---------- SHAP ----------
+        st.subheader("🧠 SHAP Explanation")
 
-        # 取模型和预处理
         preprocessor = model_pipeline.named_steps.get("preprocessor", None)
         model = model_pipeline.named_steps["model"]
 
@@ -95,14 +83,11 @@ if st.button("🔍 Predict & Explain"):
         explainer = shap.TreeExplainer(model)
         shap_values = explainer.shap_values(X_processed)
 
-        # 处理二分类情况
         if isinstance(shap_values, list):
             shap_values = shap_values[1]
 
-        # ===== Waterfall =====
-        st.markdown("### 🔹 SHAP Waterfall Plot")
-
-        fig1, ax1 = plt.subplots(figsize=(8, 5))
+        # Waterfall
+        fig1 = plt.figure(figsize=(8, 5))
         shap.plots.waterfall(
             shap.Explanation(
                 values=shap_values[0],
@@ -114,10 +99,8 @@ if st.button("🔍 Predict & Explain"):
         )
         st.pyplot(fig1)
 
-        # ===== Bar Plot =====
-        st.markdown("### 🔹 SHAP Feature Importance (Single Case)")
-
-        fig2, ax2 = plt.subplots(figsize=(8, 5))
+        # Bar
+        fig2 = plt.figure(figsize=(8, 5))
         shap.plots.bar(
             shap.Explanation(
                 values=shap_values[0],
