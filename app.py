@@ -24,10 +24,10 @@ st.title("🫀 SICM Mortality Prediction with SHAP Explanation")
 def load_model():
     return joblib.load("best_model_XGBoost.pkl")
 
-model_obj = load_model()
+bundle = load_model()
 
 # =========================
-# 递归拆 Pipeline（SHAP 兜底）
+# 解析 Pipeline / Model
 # =========================
 def unwrap_pipeline(obj):
     if isinstance(obj, Pipeline):
@@ -41,15 +41,15 @@ def find_preprocessor(obj):
                 return step
     return None
 
-final_model = None
 preprocessor = None
+final_model = None
 
-if isinstance(model_obj, Pipeline):
-    preprocessor = find_preprocessor(model_obj)
-    final_model = unwrap_pipeline(model_obj)
+if isinstance(bundle, Pipeline):
+    preprocessor = find_preprocessor(bundle)
+    final_model = unwrap_pipeline(bundle)
 
-elif isinstance(model_obj, dict):
-    for v in model_obj.values():
+elif isinstance(bundle, dict):
+    for v in bundle.values():
         if isinstance(v, Pipeline):
             preprocessor = find_preprocessor(v)
             final_model = unwrap_pipeline(v)
@@ -58,7 +58,7 @@ elif isinstance(model_obj, dict):
             final_model = v
 
 if final_model is None or isinstance(final_model, Pipeline):
-    st.error("❌ Failed to extract final model for SHAP")
+    st.error("❌ Failed to extract final model")
     st.stop()
 
 # =========================
@@ -88,28 +88,24 @@ feature_names = [
 ]
 
 # =========================
-# 🔑 超鲁棒数值解析函数（核心修复点）
+# 🔑 超强数值解析（终极版）
 # =========================
 def robust_float(x):
-    """
-    将各种奇葩输入安全转为 float
-    """
     if x is None:
         return np.nan
 
-    # numpy array
-    if isinstance(x, (np.ndarray, list)):
+    # numpy / list
+    if isinstance(x, (list, tuple, np.ndarray)):
         if len(x) == 0:
             return np.nan
         return robust_float(x[0])
 
-    # 字符串
+    # string
     if isinstance(x, str):
         x = x.strip()
-        if x == "":
+        if x == "" or x == "[]":
             return np.nan
 
-        # 形如 "[3.1092438E-1]"
         if x.startswith("[") and x.endswith("]"):
             try:
                 parsed = ast.literal_eval(x)
@@ -122,7 +118,7 @@ def robust_float(x):
         except Exception:
             return np.nan
 
-    # 普通数值
+    # number
     try:
         return float(x)
     except Exception:
@@ -139,21 +135,26 @@ for feat in feature_names:
 
 X_input = pd.DataFrame([input_data])
 
-# 强制逐元素清洗
+# --------- 第一遍：逐单元 robust 解析
 for col in X_input.columns:
     X_input[col] = X_input[col].apply(robust_float)
+
+# --------- 第二遍：DataFrame 级别强制 numeric
+X_input = X_input.apply(pd.to_numeric, errors="coerce")
 
 # =========================
 # 预测 + SHAP
 # =========================
 if st.button("🔍 Predict & Explain"):
-
     try:
         # ---------- 预处理 ----------
         if preprocessor is not None:
             X_processed = preprocessor.transform(X_input)
         else:
             X_processed = X_input.values
+
+        # ---------- 第三遍：最终 float 强制 ----------
+        X_processed = np.asarray(X_processed, dtype=float)
 
         # ---------- 预测 ----------
         prob = final_model.predict_proba(X_processed)[0, 1]
