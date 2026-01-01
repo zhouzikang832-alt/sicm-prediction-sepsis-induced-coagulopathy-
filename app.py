@@ -4,7 +4,6 @@ import pandas as pd
 import shap
 import joblib
 import matplotlib.pyplot as plt
-from sklearn.pipeline import Pipeline
 
 # =========================
 # 页面配置
@@ -17,32 +16,16 @@ st.set_page_config(
 st.title("🫀 SICM Mortality Prediction with SHAP Explanation")
 
 # =========================
-# 加载模型（只取最终模型）
+# 加载完整 Pipeline（不拆）
 # =========================
 @st.cache_resource
-def load_final_model():
-    obj = joblib.load("best_model_XGBoost.pkl")
+def load_pipeline():
+    return joblib.load("best_model_XGBoost.pkl")
 
-    # 如果是 Pipeline，取最后一步
-    if isinstance(obj, Pipeline):
-        return obj.steps[-1][1]
-
-    # 如果是 dict，找能 predict_proba 的
-    if isinstance(obj, dict):
-        for v in obj.values():
-            if hasattr(v, "predict_proba"):
-                return v
-
-    # 兜底
-    if hasattr(obj, "predict_proba"):
-        return obj
-
-    raise RuntimeError("❌ 无法从 pkl 中提取最终模型")
-
-model = load_final_model()
+model = load_pipeline()
 
 # =========================
-# 特征（严格顺序）
+# 特征（必须与训练一致）
 # =========================
 feature_names = [
     "RR",
@@ -68,7 +51,7 @@ feature_names = [
 ]
 
 # =========================
-# 输入（只允许 float）
+# 输入区域（只允许 float）
 # =========================
 st.sidebar.header("📥 Patient Variables")
 
@@ -82,36 +65,46 @@ for feat in feature_names:
     )
     values.append(v)
 
-# numpy float32（XGBoost 原生）
-X = np.array(values, dtype=np.float32).reshape(1, -1)
+X_input = pd.DataFrame([values], columns=feature_names, dtype=float)
 
 # =========================
-# 预测 + SHAP
+# 预测 + SHAP（通用 Explainer）
 # =========================
 if st.button("🔍 Predict & Explain"):
     try:
         # ---------- 预测 ----------
-        prob = model.predict_proba(X)[0, 1]
+        prob = model.predict_proba(X_input)[0, 1]
 
         st.subheader("📊 Prediction Result")
         st.metric("Predicted Mortality Risk", f"{prob:.3f}")
 
         # ---------- SHAP ----------
-        st.subheader("🧠 SHAP Explanation (Single Patient)")
+        st.subheader("🧠 SHAP Explanation (Pipeline-compatible)")
 
-        explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X)
+        # 🔥 关键：用通用 Explainer
+        explainer = shap.Explainer(
+            model.predict_proba,
+            X_input,
+            algorithm="auto"
+        )
 
-        if isinstance(shap_values, list):
-            shap_values = shap_values[1]
+        shap_values = explainer(X_input)
+
+        # 取正类
+        if shap_values.values.ndim == 3:
+            shap_vals = shap_values.values[0, :, 1]
+            base_val = shap_values.base_values[0, 1]
+        else:
+            shap_vals = shap_values.values[0]
+            base_val = shap_values.base_values[0]
 
         # Waterfall
         fig1 = plt.figure(figsize=(9, 5))
         shap.plots.waterfall(
             shap.Explanation(
-                values=shap_values[0],
-                base_values=explainer.expected_value,
-                data=X[0],
+                values=shap_vals,
+                base_values=base_val,
+                data=X_input.iloc[0],
                 feature_names=feature_names
             ),
             show=False
@@ -122,9 +115,9 @@ if st.button("🔍 Predict & Explain"):
         fig2 = plt.figure(figsize=(9, 5))
         shap.plots.bar(
             shap.Explanation(
-                values=shap_values[0],
-                base_values=explainer.expected_value,
-                data=X[0],
+                values=shap_vals,
+                base_values=base_val,
+                data=X_input.iloc[0],
                 feature_names=feature_names
             ),
             show=False
