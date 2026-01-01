@@ -26,34 +26,31 @@ def load_model():
 obj = load_model()
 
 # =========================
-# 解析模型
+# 解析 Pipeline（不假设名字）
 # =========================
-pipeline = None
-final_model = None
-preprocessor = None
-
 if isinstance(obj, Pipeline):
     pipeline = obj
 elif isinstance(obj, dict):
+    pipeline = None
     for v in obj.values():
         if isinstance(v, Pipeline):
             pipeline = v
             break
+else:
+    pipeline = None
 
 if pipeline is None:
     st.error("❌ 未找到 sklearn Pipeline")
     st.stop()
 
-# 强制约定命名
-preprocessor = pipeline.named_steps.get("imputer")
-final_model = pipeline.named_steps.get("model")
+# 最后一步 = 模型
+final_model = pipeline.steps[-1][1]
 
-if final_model is None:
-    st.error("❌ Pipeline 中未找到 model")
-    st.stop()
+# 前面所有步骤 = 预处理
+preprocessor = pipeline[:-1]
 
 # =========================
-# 特征（顺序 = 训练顺序）
+# 特征（必须与训练一致）
 # =========================
 feature_names = [
     "RR",
@@ -83,19 +80,18 @@ feature_names = [
 # =========================
 st.sidebar.header("📥 Patient Variables")
 
-input_values = []
-
+values = []
 for feat in feature_names:
-    val = st.sidebar.number_input(
+    v = st.sidebar.number_input(
         label=feat,
         value=np.nan,
         step=0.01,
         format="%.5f"
     )
-    input_values.append(val)
+    values.append(v)
 
-# DataFrame：从诞生起就是 float
-X_input = pd.DataFrame([input_values], columns=feature_names, dtype=float)
+# 从源头就是 float
+X_input = pd.DataFrame([values], columns=feature_names, dtype=float)
 
 # =========================
 # 预测 + SHAP
@@ -104,8 +100,6 @@ if st.button("🔍 Predict & Explain"):
     try:
         # ---------- 预处理 ----------
         X_processed = preprocessor.transform(X_input)
-
-        # sklearn / xgboost 双保险
         X_processed = np.asarray(X_processed, dtype=float)
 
         # ---------- 预测 ----------
