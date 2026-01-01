@@ -4,7 +4,6 @@ import pandas as pd
 import shap
 import joblib
 import matplotlib.pyplot as plt
-import ast
 from sklearn.pipeline import Pipeline
 
 # =========================
@@ -24,45 +23,37 @@ st.title("🫀 SICM Mortality Prediction with SHAP Explanation")
 def load_model():
     return joblib.load("best_model_XGBoost.pkl")
 
-bundle = load_model()
+obj = load_model()
 
 # =========================
-# 解析 Pipeline / Model
+# 解析模型
 # =========================
-def unwrap_pipeline(obj):
-    if isinstance(obj, Pipeline):
-        return unwrap_pipeline(list(obj.named_steps.values())[-1])
-    return obj
-
-def find_preprocessor(obj):
-    if isinstance(obj, Pipeline):
-        for step in obj.named_steps.values():
-            if hasattr(step, "transform"):
-                return step
-    return None
-
-preprocessor = None
+pipeline = None
 final_model = None
+preprocessor = None
 
-if isinstance(bundle, Pipeline):
-    preprocessor = find_preprocessor(bundle)
-    final_model = unwrap_pipeline(bundle)
-
-elif isinstance(bundle, dict):
-    for v in bundle.values():
+if isinstance(obj, Pipeline):
+    pipeline = obj
+elif isinstance(obj, dict):
+    for v in obj.values():
         if isinstance(v, Pipeline):
-            preprocessor = find_preprocessor(v)
-            final_model = unwrap_pipeline(v)
+            pipeline = v
             break
-        if hasattr(v, "predict_proba"):
-            final_model = v
 
-if final_model is None or isinstance(final_model, Pipeline):
-    st.error("❌ Failed to extract final model")
+if pipeline is None:
+    st.error("❌ 未找到 sklearn Pipeline")
+    st.stop()
+
+# 强制约定命名
+preprocessor = pipeline.named_steps.get("imputer")
+final_model = pipeline.named_steps.get("model")
+
+if final_model is None:
+    st.error("❌ Pipeline 中未找到 model")
     st.stop()
 
 # =========================
-# 特征（固定 20 个）
+# 特征（顺序 = 训练顺序）
 # =========================
 feature_names = [
     "RR",
@@ -88,59 +79,23 @@ feature_names = [
 ]
 
 # =========================
-# 🔑 超强数值解析（终极版）
-# =========================
-def robust_float(x):
-    if x is None:
-        return np.nan
-
-    # numpy / list
-    if isinstance(x, (list, tuple, np.ndarray)):
-        if len(x) == 0:
-            return np.nan
-        return robust_float(x[0])
-
-    # string
-    if isinstance(x, str):
-        x = x.strip()
-        if x == "" or x == "[]":
-            return np.nan
-
-        if x.startswith("[") and x.endswith("]"):
-            try:
-                parsed = ast.literal_eval(x)
-                return robust_float(parsed)
-            except Exception:
-                return np.nan
-
-        try:
-            return float(x)
-        except Exception:
-            return np.nan
-
-    # number
-    try:
-        return float(x)
-    except Exception:
-        return np.nan
-
-# =========================
-# 输入区域
+# 输入区域（只允许数值）
 # =========================
 st.sidebar.header("📥 Patient Variables")
 
-input_data = {}
+input_values = []
+
 for feat in feature_names:
-    input_data[feat] = st.sidebar.text_input(feat, "")
+    val = st.sidebar.number_input(
+        label=feat,
+        value=np.nan,
+        step=0.01,
+        format="%.5f"
+    )
+    input_values.append(val)
 
-X_input = pd.DataFrame([input_data])
-
-# --------- 第一遍：逐单元 robust 解析
-for col in X_input.columns:
-    X_input[col] = X_input[col].apply(robust_float)
-
-# --------- 第二遍：DataFrame 级别强制 numeric
-X_input = X_input.apply(pd.to_numeric, errors="coerce")
+# DataFrame：从诞生起就是 float
+X_input = pd.DataFrame([input_values], columns=feature_names, dtype=float)
 
 # =========================
 # 预测 + SHAP
@@ -148,12 +103,9 @@ X_input = X_input.apply(pd.to_numeric, errors="coerce")
 if st.button("🔍 Predict & Explain"):
     try:
         # ---------- 预处理 ----------
-        if preprocessor is not None:
-            X_processed = preprocessor.transform(X_input)
-        else:
-            X_processed = X_input.values
+        X_processed = preprocessor.transform(X_input)
 
-        # ---------- 第三遍：最终 float 强制 ----------
+        # sklearn / xgboost 双保险
         X_processed = np.asarray(X_processed, dtype=float)
 
         # ---------- 预测 ----------
@@ -171,6 +123,7 @@ if st.button("🔍 Predict & Explain"):
         if isinstance(shap_values, list):
             shap_values = shap_values[1]
 
+        # Waterfall
         fig1 = plt.figure(figsize=(9, 5))
         shap.plots.waterfall(
             shap.Explanation(
@@ -183,6 +136,7 @@ if st.button("🔍 Predict & Explain"):
         )
         st.pyplot(fig1)
 
+        # Bar
         fig2 = plt.figure(figsize=(9, 5))
         shap.plots.bar(
             shap.Explanation(
