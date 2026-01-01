@@ -4,6 +4,7 @@ import pandas as pd
 import shap
 import joblib
 import matplotlib.pyplot as plt
+from sklearn.pipeline import Pipeline
 
 # =========================
 # 页面配置
@@ -16,16 +17,60 @@ st.set_page_config(
 st.title("🫀 SICM Mortality Prediction with SHAP Explanation")
 
 # =========================
-# 加载完整 Pipeline（不拆）
+# 🔑 递归查找真正的模型
+# =========================
+def find_predictor(obj, visited=None):
+    if visited is None:
+        visited = set()
+
+    if id(obj) in visited:
+        return None
+    visited.add(id(obj))
+
+    # 直接是模型
+    if hasattr(obj, "predict_proba"):
+        return obj
+
+    # Pipeline
+    if isinstance(obj, Pipeline):
+        for _, step in obj.steps[::-1]:
+            found = find_predictor(step, visited)
+            if found is not None:
+                return found
+
+    # dict
+    if isinstance(obj, dict):
+        for v in obj.values():
+            found = find_predictor(v, visited)
+            if found is not None:
+                return found
+
+    # list / tuple
+    if isinstance(obj, (list, tuple)):
+        for v in obj:
+            found = find_predictor(v, visited)
+            if found is not None:
+                return found
+
+    return None
+
+
+# =========================
+# 加载 pkl
 # =========================
 @st.cache_resource
-def load_pipeline():
+def load_model():
     return joblib.load("best_model_XGBoost.pkl")
 
-model = load_pipeline()
+bundle = load_model()
+model = find_predictor(bundle)
+
+if model is None:
+    st.error("❌ 无法在 pkl 中找到可用于 predict_proba 的模型")
+    st.stop()
 
 # =========================
-# 特征（必须与训练一致）
+# 特征名（固定顺序）
 # =========================
 feature_names = [
     "RR",
@@ -51,7 +96,7 @@ feature_names = [
 ]
 
 # =========================
-# 输入区域（只允许 float）
+# 输入（只允许 float）
 # =========================
 st.sidebar.header("📥 Patient Variables")
 
@@ -68,7 +113,7 @@ for feat in feature_names:
 X_input = pd.DataFrame([values], columns=feature_names, dtype=float)
 
 # =========================
-# 预测 + SHAP（通用 Explainer）
+# 预测 + SHAP（通用）
 # =========================
 if st.button("🔍 Predict & Explain"):
     try:
@@ -79,9 +124,8 @@ if st.button("🔍 Predict & Explain"):
         st.metric("Predicted Mortality Risk", f"{prob:.3f}")
 
         # ---------- SHAP ----------
-        st.subheader("🧠 SHAP Explanation (Pipeline-compatible)")
+        st.subheader("🧠 SHAP Explanation")
 
-        # 🔥 关键：用通用 Explainer
         explainer = shap.Explainer(
             model.predict_proba,
             X_input,
