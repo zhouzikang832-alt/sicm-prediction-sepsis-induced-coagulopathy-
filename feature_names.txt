@@ -1,0 +1,8 @@
+age
+BUN_MEAN
+LAC_MAX
+PLT_MIN
+ALB_MEAN
+SPO2_MEAN
+PTT_MEAN
+Percentage_of_lymphocytes_MIN
