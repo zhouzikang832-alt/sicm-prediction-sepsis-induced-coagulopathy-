@@ -17,56 +17,76 @@ st.set_page_config(
 st.title("🫀 SICM Mortality Prediction with SHAP Explanation")
 
 # =========================
-# 加载 bundle
+# 加载模型
 # =========================
 @st.cache_resource
-def load_bundle():
+def load_model():
     return joblib.load("best_model_XGBoost.pkl")
 
-bundle = load_bundle()
+model_obj = load_model()
 
 # =========================
-# 🔑 自动解析 bundle 结构（核心）
+# 解析模型结构
 # =========================
-model = None
-preprocessor = None
+# 情况 1：直接是 Pipeline（最常见）
+if isinstance(model_obj, Pipeline):
+    pipeline = model_obj
+    final_model = pipeline.named_steps["model"]
+    preprocessor = pipeline.named_steps["imputer"]
 
-# 情况 1：bundle 本身就是 Pipeline
-if isinstance(bundle, Pipeline):
-    model = bundle
+# 情况 2：是 dict
+elif isinstance(model_obj, dict):
+
+    pipeline = None
+    final_model = None
     preprocessor = None
 
-# 情况 2：bundle 是 dict
-elif isinstance(bundle, dict):
-
-    # 优先找 Pipeline
-    for v in bundle.values():
+    # 先找 Pipeline
+    for v in model_obj.values():
         if isinstance(v, Pipeline):
-            model = v
+            pipeline = v
+            final_model = pipeline.named_steps.get("model")
+            preprocessor = pipeline.named_steps.get("imputer")
             break
 
-    # 否则找有 predict_proba 的对象
-    if model is None:
-        for v in bundle.values():
+    # 否则找模型和预处理
+    if final_model is None:
+        for v in model_obj.values():
             if hasattr(v, "predict_proba"):
-                model = v
+                final_model = v
             elif hasattr(v, "transform"):
                 preprocessor = v
 
-# 最终兜底
-if model is None:
-    st.error("❌ 未能从模型文件中识别可用于预测的模型对象")
+# 兜底
+if final_model is None:
+    st.error("❌ 无法识别模型结构，请检查 best_model_XGBoost.pkl")
     st.stop()
 
 # =========================
-# 特征名
+# 特征名（20 个，顺序必须一致）
 # =========================
-@st.cache_data
-def load_feature_names():
-    with open("feature_names.txt", "r") as f:
-        return [line.strip() for line in f if line.strip()]
-
-feature_names = load_feature_names()
+feature_names = [
+    "RR",
+    "DBP",
+    "Absolute value of lymphocytes",
+    "DD",
+    "SPO2",
+    "CKMB",
+    "CRE",
+    "SBP",
+    "ALT",
+    "LDH",
+    "CRP",
+    "Quantitative Myoglobin Assay",
+    "HR",
+    "PO2",
+    "Absolute value of neutrophils",
+    "IL-6",
+    "AST",
+    "PT",
+    "INR1",
+    "UREA"
+]
 
 # =========================
 # 输入区域
@@ -104,7 +124,7 @@ if st.button("🔍 Predict & Explain"):
             X_processed = X_input.values
 
         # ---------- 预测 ----------
-        prob = model.predict_proba(X_processed)[0, 1]
+        prob = final_model.predict_proba(X_processed)[0, 1]
 
         st.subheader("📊 Prediction Result")
         st.metric("Predicted Mortality Risk", f"{prob:.3f}")
@@ -112,7 +132,7 @@ if st.button("🔍 Predict & Explain"):
         # ---------- SHAP ----------
         st.subheader("🧠 SHAP Single-Patient Explanation")
 
-        explainer = shap.TreeExplainer(model)
+        explainer = shap.TreeExplainer(final_model)
         shap_values = explainer.shap_values(X_processed)
 
         if isinstance(shap_values, list):
