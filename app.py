@@ -17,40 +17,32 @@ st.set_page_config(
 st.title("🫀 SICM Mortality Prediction with SHAP Explanation")
 
 # =========================
-# 加载模型
+# 加载模型（只取最终模型）
 # =========================
 @st.cache_resource
-def load_model():
-    return joblib.load("best_model_XGBoost.pkl")
+def load_final_model():
+    obj = joblib.load("best_model_XGBoost.pkl")
 
-obj = load_model()
+    # 如果是 Pipeline，取最后一步
+    if isinstance(obj, Pipeline):
+        return obj.steps[-1][1]
 
-# =========================
-# 解析 Pipeline（不假设名字）
-# =========================
-if isinstance(obj, Pipeline):
-    pipeline = obj
-elif isinstance(obj, dict):
-    pipeline = None
-    for v in obj.values():
-        if isinstance(v, Pipeline):
-            pipeline = v
-            break
-else:
-    pipeline = None
+    # 如果是 dict，找能 predict_proba 的
+    if isinstance(obj, dict):
+        for v in obj.values():
+            if hasattr(v, "predict_proba"):
+                return v
 
-if pipeline is None:
-    st.error("❌ 未找到 sklearn Pipeline")
-    st.stop()
+    # 兜底
+    if hasattr(obj, "predict_proba"):
+        return obj
 
-# 最后一步 = 模型
-final_model = pipeline.steps[-1][1]
+    raise RuntimeError("❌ 无法从 pkl 中提取最终模型")
 
-# 前面所有步骤 = 预处理
-preprocessor = pipeline[:-1]
+model = load_final_model()
 
 # =========================
-# 特征（必须与训练一致）
+# 特征（严格顺序）
 # =========================
 feature_names = [
     "RR",
@@ -76,34 +68,30 @@ feature_names = [
 ]
 
 # =========================
-# 输入区域（只允许数值）
+# 输入（只允许 float）
 # =========================
 st.sidebar.header("📥 Patient Variables")
 
 values = []
 for feat in feature_names:
     v = st.sidebar.number_input(
-        label=feat,
+        feat,
         value=np.nan,
         step=0.01,
-        format="%.5f"
+        format="%.6f"
     )
     values.append(v)
 
-# 从源头就是 float
-X_input = pd.DataFrame([values], columns=feature_names, dtype=float)
+# numpy float32（XGBoost 原生）
+X = np.array(values, dtype=np.float32).reshape(1, -1)
 
 # =========================
 # 预测 + SHAP
 # =========================
 if st.button("🔍 Predict & Explain"):
     try:
-        # ---------- 预处理 ----------
-        X_processed = preprocessor.transform(X_input)
-        X_processed = np.asarray(X_processed, dtype=float)
-
         # ---------- 预测 ----------
-        prob = final_model.predict_proba(X_processed)[0, 1]
+        prob = model.predict_proba(X)[0, 1]
 
         st.subheader("📊 Prediction Result")
         st.metric("Predicted Mortality Risk", f"{prob:.3f}")
@@ -111,8 +99,8 @@ if st.button("🔍 Predict & Explain"):
         # ---------- SHAP ----------
         st.subheader("🧠 SHAP Explanation (Single Patient)")
 
-        explainer = shap.TreeExplainer(final_model)
-        shap_values = explainer.shap_values(X_processed)
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X)
 
         if isinstance(shap_values, list):
             shap_values = shap_values[1]
@@ -123,7 +111,7 @@ if st.button("🔍 Predict & Explain"):
             shap.Explanation(
                 values=shap_values[0],
                 base_values=explainer.expected_value,
-                data=X_processed[0],
+                data=X[0],
                 feature_names=feature_names
             ),
             show=False
@@ -136,7 +124,7 @@ if st.button("🔍 Predict & Explain"):
             shap.Explanation(
                 values=shap_values[0],
                 base_values=explainer.expected_value,
-                data=X_processed[0],
+                data=X[0],
                 feature_names=feature_names
             ),
             show=False
