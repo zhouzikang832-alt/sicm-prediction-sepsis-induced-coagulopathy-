@@ -1,8 +1,20 @@
-age
-BUN_MEAN
-LAC_MAX
-PLT_MIN
-ALB_MEAN
-SPO2_MEAN
-PTT_MEAN
-Percentage_of_lymphocytes_MIN
+RR
+DBP
+Absolute value of lymphocytes
+DD
+SPO2
+CKMB
+CRE
+SBP
+ALT
+LDH
+CRP
+Quantitative Myoglobin Assay
+HR
+PO2
+Absolute value of neutrophils
+IL-6
+AST
+PT
+INR1
+UREA
