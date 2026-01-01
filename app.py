@@ -4,6 +4,7 @@ import pandas as pd
 import shap
 import joblib
 import matplotlib.pyplot as plt
+from sklearn.pipeline import Pipeline
 
 # =========================
 # 页面配置
@@ -16,21 +17,49 @@ st.set_page_config(
 st.title("🫀 SICM Mortality Prediction with SHAP Explanation")
 
 # =========================
-# 加载模型 bundle（dict）
+# 加载 bundle
 # =========================
 @st.cache_resource
 def load_bundle():
-    bundle = joblib.load("best_model_XGBoost.pkl")
-    return bundle
+    return joblib.load("best_model_XGBoost.pkl")
 
 bundle = load_bundle()
 
-# 从 dict 中取组件（关键修复）
-model = bundle["model"]
-preprocessor = bundle.get("preprocessor", None)
+# =========================
+# 🔑 自动解析 bundle 结构（核心）
+# =========================
+model = None
+preprocessor = None
+
+# 情况 1：bundle 本身就是 Pipeline
+if isinstance(bundle, Pipeline):
+    model = bundle
+    preprocessor = None
+
+# 情况 2：bundle 是 dict
+elif isinstance(bundle, dict):
+
+    # 优先找 Pipeline
+    for v in bundle.values():
+        if isinstance(v, Pipeline):
+            model = v
+            break
+
+    # 否则找有 predict_proba 的对象
+    if model is None:
+        for v in bundle.values():
+            if hasattr(v, "predict_proba"):
+                model = v
+            elif hasattr(v, "transform"):
+                preprocessor = v
+
+# 最终兜底
+if model is None:
+    st.error("❌ 未能从模型文件中识别可用于预测的模型对象")
+    st.stop()
 
 # =========================
-# 加载特征名
+# 特征名
 # =========================
 @st.cache_data
 def load_feature_names():
@@ -49,13 +78,9 @@ for feat in feature_names:
     input_data[feat] = st.sidebar.text_input(feat, "")
 
 # =========================
-# 输入清洗函数（核心防炸）
+# 输入清洗
 # =========================
 def safe_float(x):
-    """
-    将 '[3.1E-1]'、'0.3'、array([0.3]) 等
-    统一转为 float，异常值返回 NaN
-    """
     if isinstance(x, str):
         x = x.strip().replace("[", "").replace("]", "")
     try:
@@ -82,10 +107,7 @@ if st.button("🔍 Predict & Explain"):
         prob = model.predict_proba(X_processed)[0, 1]
 
         st.subheader("📊 Prediction Result")
-        st.metric(
-            label="Predicted Mortality Risk",
-            value=f"{prob:.3f}"
-        )
+        st.metric("Predicted Mortality Risk", f"{prob:.3f}")
 
         # ---------- SHAP ----------
         st.subheader("🧠 SHAP Single-Patient Explanation")
@@ -93,11 +115,10 @@ if st.button("🔍 Predict & Explain"):
         explainer = shap.TreeExplainer(model)
         shap_values = explainer.shap_values(X_processed)
 
-        # 二分类模型取正类
         if isinstance(shap_values, list):
             shap_values = shap_values[1]
 
-        # ===== Waterfall Plot =====
+        # Waterfall
         fig1 = plt.figure(figsize=(9, 5))
         shap.plots.waterfall(
             shap.Explanation(
@@ -110,7 +131,7 @@ if st.button("🔍 Predict & Explain"):
         )
         st.pyplot(fig1)
 
-        # ===== Bar Plot =====
+        # Bar
         fig2 = plt.figure(figsize=(9, 5))
         shap.plots.bar(
             shap.Explanation(
