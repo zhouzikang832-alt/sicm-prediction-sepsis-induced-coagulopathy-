@@ -4,6 +4,7 @@ import pandas as pd
 import shap
 import joblib
 import matplotlib.pyplot as plt
+import ast
 from sklearn.pipeline import Pipeline
 
 # =========================
@@ -17,7 +18,7 @@ st.set_page_config(
 st.title("🫀 SICM Mortality Prediction with SHAP Explanation")
 
 # =========================
-# 加载模型对象
+# 加载模型
 # =========================
 @st.cache_resource
 def load_model():
@@ -26,63 +27,42 @@ def load_model():
 model_obj = load_model()
 
 # =========================
-# 🔑 递归拆 Pipeline（核心兜底）
+# 递归拆 Pipeline（SHAP 兜底）
 # =========================
 def unwrap_pipeline(obj):
-    """
-    不断拆 Pipeline，直到拿到最底层的模型
-    """
     if isinstance(obj, Pipeline):
-        # 取最后一个 step
-        last_step = list(obj.named_steps.values())[-1]
-        return unwrap_pipeline(last_step)
-    else:
-        return obj
+        return unwrap_pipeline(list(obj.named_steps.values())[-1])
+    return obj
 
 def find_preprocessor(obj):
-    """
-    从 Pipeline 中找到第一个 transform（如 SimpleImputer）
-    """
     if isinstance(obj, Pipeline):
         for step in obj.named_steps.values():
             if hasattr(step, "transform"):
                 return step
     return None
 
-# =========================
-# 解析模型结构
-# =========================
 final_model = None
 preprocessor = None
 
-# 情况 1：直接是 Pipeline
 if isinstance(model_obj, Pipeline):
     preprocessor = find_preprocessor(model_obj)
     final_model = unwrap_pipeline(model_obj)
 
-# 情况 2：是 dict
 elif isinstance(model_obj, dict):
     for v in model_obj.values():
         if isinstance(v, Pipeline):
             preprocessor = find_preprocessor(v)
             final_model = unwrap_pipeline(v)
             break
+        if hasattr(v, "predict_proba"):
+            final_model = v
 
-    # 如果还没找到，再兜底
-    if final_model is None:
-        for v in model_obj.values():
-            if hasattr(v, "predict_proba"):
-                final_model = unwrap_pipeline(v)
-            elif hasattr(v, "transform"):
-                preprocessor = v
-
-# 最终兜底
 if final_model is None or isinstance(final_model, Pipeline):
-    st.error("❌ 未能解析出可用于 SHAP 的最终模型（非 Pipeline）")
+    st.error("❌ Failed to extract final model for SHAP")
     st.stop()
 
 # =========================
-# 特征名（固定 20 个）
+# 特征（固定 20 个）
 # =========================
 feature_names = [
     "RR",
@@ -108,6 +88,47 @@ feature_names = [
 ]
 
 # =========================
+# 🔑 超鲁棒数值解析函数（核心修复点）
+# =========================
+def robust_float(x):
+    """
+    将各种奇葩输入安全转为 float
+    """
+    if x is None:
+        return np.nan
+
+    # numpy array
+    if isinstance(x, (np.ndarray, list)):
+        if len(x) == 0:
+            return np.nan
+        return robust_float(x[0])
+
+    # 字符串
+    if isinstance(x, str):
+        x = x.strip()
+        if x == "":
+            return np.nan
+
+        # 形如 "[3.1092438E-1]"
+        if x.startswith("[") and x.endswith("]"):
+            try:
+                parsed = ast.literal_eval(x)
+                return robust_float(parsed)
+            except Exception:
+                return np.nan
+
+        try:
+            return float(x)
+        except Exception:
+            return np.nan
+
+    # 普通数值
+    try:
+        return float(x)
+    except Exception:
+        return np.nan
+
+# =========================
 # 输入区域
 # =========================
 st.sidebar.header("📥 Patient Variables")
@@ -116,19 +137,11 @@ input_data = {}
 for feat in feature_names:
     input_data[feat] = st.sidebar.text_input(feat, "")
 
-# =========================
-# 输入清洗
-# =========================
-def safe_float(x):
-    if isinstance(x, str):
-        x = x.strip().replace("[", "").replace("]", "")
-    try:
-        return float(x)
-    except Exception:
-        return np.nan
-
 X_input = pd.DataFrame([input_data])
-X_input = X_input.applymap(safe_float)
+
+# 强制逐元素清洗
+for col in X_input.columns:
+    X_input[col] = X_input[col].apply(robust_float)
 
 # =========================
 # 预测 + SHAP
@@ -149,7 +162,7 @@ if st.button("🔍 Predict & Explain"):
         st.metric("Predicted Mortality Risk", f"{prob:.3f}")
 
         # ---------- SHAP ----------
-        st.subheader("🧠 SHAP Single-Patient Explanation")
+        st.subheader("🧠 SHAP Explanation (Single Patient)")
 
         explainer = shap.TreeExplainer(final_model)
         shap_values = explainer.shap_values(X_processed)
@@ -157,7 +170,6 @@ if st.button("🔍 Predict & Explain"):
         if isinstance(shap_values, list):
             shap_values = shap_values[1]
 
-        # Waterfall
         fig1 = plt.figure(figsize=(9, 5))
         shap.plots.waterfall(
             shap.Explanation(
@@ -170,7 +182,6 @@ if st.button("🔍 Predict & Explain"):
         )
         st.pyplot(fig1)
 
-        # Bar
         fig2 = plt.figure(figsize=(9, 5))
         shap.plots.bar(
             shap.Explanation(
