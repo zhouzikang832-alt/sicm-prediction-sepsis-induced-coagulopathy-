@@ -1,145 +1,133 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-import joblib
 import shap
+import joblib
 import matplotlib.pyplot as plt
 
-# =====================
-# 页面设置
-# =====================
+# =========================
+# 页面基础设置
+# =========================
 st.set_page_config(
-    page_title="Sepsis-Associated Coagulopathy ICU Risk Predictor",
-    layout="centered"
+    page_title="SICM Mortality Prediction with SHAP",
+    layout="wide"
 )
 
-st.title("🩸 Sepsis-Associated Coagulopathy")
-st.subheader("ICU Admission Risk Prediction with SHAP Explanation")
+st.title("🫀 Sepsis-Induced Cardiomyopathy Mortality Risk Prediction")
+st.markdown("Single-patient prediction with SHAP explanation")
 
-st.markdown(
-    """
-    **Model overview**
-    - Population: Sepsis-associated coagulopathy
-    - Input: Day-1 laboratory & vital signs
-    - Model: XGBoost (tree-based)
-    - Performance: AUC = 0.942
-    - Output: ICU admission probability + individualized explanation
-    """
-)
-
-# =====================
-# 加载模型（缓存）
-# =====================
+# =========================
+# 加载模型
+# =========================
 @st.cache_resource
 def load_model():
-    model_bundle = joblib.load("best_model_XGBoost.pkl")
-    return model_bundle
+    return joblib.load("best_model_XGBoost.pkl")
 
-model_bundle = load_model()
-pipeline = model_bundle["pipeline"]
-FEATURES = model_bundle["features"]
+model_pipeline = load_model()
 
-# 拆出 pipeline 内部组件
-imputer = pipeline.named_steps["imputer"]
-scaler = pipeline.named_steps["scaler"]
-model = pipeline.named_steps["clf"]
+# =========================
+# 获取特征名
+# =========================
+if hasattr(model_pipeline, "feature_names_in_"):
+    feature_names = model_pipeline.feature_names_in_
+else:
+    # 兜底（不推荐，但防炸）
+    feature_names = model_pipeline.named_steps["model"].feature_name_
 
-# =====================
+# =========================
 # 输入区
-# =====================
-st.markdown("## 🔬 Enter Day-1 Clinical Variables")
+# =========================
+st.sidebar.header("📥 Patient Input")
 
 input_data = {}
-col1, col2 = st.columns(2)
 
-for i, feat in enumerate(FEATURES):
-    with col1 if i % 2 == 0 else col2:
-        input_data[feat] = st.number_input(
-            label=feat,
-            value=0.0,
-            step=0.1,
-            format="%.3f"
-        )
+for feat in feature_names:
+    input_data[feat] = st.sidebar.text_input(
+        label=feat,
+        value=""
+    )
 
+# =========================
+# 输入清洗（关键修复点）
+# =========================
+def safe_float(x):
+    """
+    把 '[3.1E-1]' / '0.3' / array([0.3]) 全部兜成 float
+    """
+    if isinstance(x, str):
+        x = x.strip().replace("[", "").replace("]", "")
+    try:
+        return float(x)
+    except Exception:
+        return np.nan
+
+# 构造 DataFrame
 X_input = pd.DataFrame([input_data])
+X_input = X_input.applymap(safe_float)
 
-# =====================
-# 预测 + SHAP
-# =====================
-st.markdown("---")
-if st.button("🚑 Predict ICU Risk & Explain", use_container_width=True):
+# =========================
+# 预测 & SHAP
+# =========================
+if st.button("🔍 Predict & Explain"):
 
     try:
-        # ---------- 预测 ----------
-        prob = pipeline.predict_proba(X_input)[0, 1]
+        # -------- 预测 --------
+        prob = model_pipeline.predict_proba(X_input)[0, 1]
 
-        st.markdown("## 📊 Prediction Result")
-        st.metric("Predicted ICU Admission Risk", f"{prob:.3f}")
-
-        if prob < 0.20:
-            st.success("🟢 Low risk")
-        elif prob < 0.50:
-            st.warning("🟡 Moderate risk")
-        else:
-            st.error("🔴 High risk")
-
-        # ---------- SHAP 单病例解释 ----------
-        st.markdown("## 🔍 Individualized SHAP Explanation")
-
-        # 与训练阶段完全一致的预处理
-        X_imp = imputer.transform(X_input)
-        X_scaled = scaler.transform(X_imp)
-
-        # TreeExplainer（适合 XGBoost / LightGBM / RF）
-        explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X_scaled)
-
-        # 二分类：取 positive class
-        if isinstance(shap_values, list):
-            shap_vals_use = shap_values[1]
-            expected_value = explainer.expected_value[1]
-        else:
-            shap_vals_use = shap_values
-            expected_value = explainer.expected_value
-
-        shap_df = pd.DataFrame({
-            "Feature": FEATURES,
-            "SHAP value": shap_vals_use[0]
-        })
-        shap_df["|SHAP|"] = shap_df["SHAP value"].abs()
-        shap_df = shap_df.sort_values("|SHAP|", ascending=False)
-
-        # ---------- 表格形式（审稿人很爱） ----------
-        st.markdown("### 🔝 Top contributing features")
-        st.dataframe(
-            shap_df.head(10)[["Feature", "SHAP value"]],
-            use_container_width=True
+        st.subheader("📊 Prediction Result")
+        st.metric(
+            label="Predicted Mortality Risk",
+            value=f"{prob:.3f}"
         )
 
-        # ---------- Waterfall Plot（单病例金标准） ----------
-        st.markdown("### 🧠 SHAP Waterfall Plot")
+        # -------- SHAP 解释 --------
+        st.subheader("🧠 SHAP Explanation (Single Patient)")
 
-        fig = plt.figure(figsize=(10, 6))
+        # 取模型和预处理
+        preprocessor = model_pipeline.named_steps.get("preprocessor", None)
+        model = model_pipeline.named_steps["model"]
+
+        if preprocessor is not None:
+            X_processed = preprocessor.transform(X_input)
+        else:
+            X_processed = X_input.values
+
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X_processed)
+
+        # 处理二分类情况
+        if isinstance(shap_values, list):
+            shap_values = shap_values[1]
+
+        # ===== Waterfall =====
+        st.markdown("### 🔹 SHAP Waterfall Plot")
+
+        fig1, ax1 = plt.subplots(figsize=(8, 5))
         shap.plots.waterfall(
             shap.Explanation(
-                values=shap_vals_use[0],
-                base_values=expected_value,
-                data=X_input.iloc[0],
-                feature_names=FEATURES
+                values=shap_values[0],
+                base_values=explainer.expected_value,
+                data=X_processed[0],
+                feature_names=feature_names
             ),
-            max_display=10,
             show=False
         )
-        st.pyplot(fig, clear_figure=True)
+        st.pyplot(fig1)
 
-        st.markdown(
-            """
-            **Interpretation**
-            - Red features ↑ increase ICU risk  
-            - Blue features ↓ decrease ICU risk  
-            - Contributions are relative to the model baseline risk
-            """
+        # ===== Bar Plot =====
+        st.markdown("### 🔹 SHAP Feature Importance (Single Case)")
+
+        fig2, ax2 = plt.subplots(figsize=(8, 5))
+        shap.plots.bar(
+            shap.Explanation(
+                values=shap_values[0],
+                base_values=explainer.expected_value,
+                data=X_processed[0],
+                feature_names=feature_names
+            ),
+            show=False
         )
+        st.pyplot(fig2)
 
     except Exception as e:
-        st.error(f"Prediction or SHAP explanation failed: {e}")
+        st.error(f"❌ Prediction or SHAP explanation failed: {e}")
