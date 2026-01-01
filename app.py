@@ -17,7 +17,7 @@ st.set_page_config(
 st.title("🫀 SICM Mortality Prediction with SHAP Explanation")
 
 # =========================
-# 加载模型
+# 加载模型对象
 # =========================
 @st.cache_resource
 def load_model():
@@ -26,44 +26,63 @@ def load_model():
 model_obj = load_model()
 
 # =========================
+# 🔑 递归拆 Pipeline（核心兜底）
+# =========================
+def unwrap_pipeline(obj):
+    """
+    不断拆 Pipeline，直到拿到最底层的模型
+    """
+    if isinstance(obj, Pipeline):
+        # 取最后一个 step
+        last_step = list(obj.named_steps.values())[-1]
+        return unwrap_pipeline(last_step)
+    else:
+        return obj
+
+def find_preprocessor(obj):
+    """
+    从 Pipeline 中找到第一个 transform（如 SimpleImputer）
+    """
+    if isinstance(obj, Pipeline):
+        for step in obj.named_steps.values():
+            if hasattr(step, "transform"):
+                return step
+    return None
+
+# =========================
 # 解析模型结构
 # =========================
-# 情况 1：直接是 Pipeline（最常见）
+final_model = None
+preprocessor = None
+
+# 情况 1：直接是 Pipeline
 if isinstance(model_obj, Pipeline):
-    pipeline = model_obj
-    final_model = pipeline.named_steps["model"]
-    preprocessor = pipeline.named_steps["imputer"]
+    preprocessor = find_preprocessor(model_obj)
+    final_model = unwrap_pipeline(model_obj)
 
 # 情况 2：是 dict
 elif isinstance(model_obj, dict):
-
-    pipeline = None
-    final_model = None
-    preprocessor = None
-
-    # 先找 Pipeline
     for v in model_obj.values():
         if isinstance(v, Pipeline):
-            pipeline = v
-            final_model = pipeline.named_steps.get("model")
-            preprocessor = pipeline.named_steps.get("imputer")
+            preprocessor = find_preprocessor(v)
+            final_model = unwrap_pipeline(v)
             break
 
-    # 否则找模型和预处理
+    # 如果还没找到，再兜底
     if final_model is None:
         for v in model_obj.values():
             if hasattr(v, "predict_proba"):
-                final_model = v
+                final_model = unwrap_pipeline(v)
             elif hasattr(v, "transform"):
                 preprocessor = v
 
-# 兜底
-if final_model is None:
-    st.error("❌ 无法识别模型结构，请检查 best_model_XGBoost.pkl")
+# 最终兜底
+if final_model is None or isinstance(final_model, Pipeline):
+    st.error("❌ 未能解析出可用于 SHAP 的最终模型（非 Pipeline）")
     st.stop()
 
 # =========================
-# 特征名（20 个，顺序必须一致）
+# 特征名（固定 20 个）
 # =========================
 feature_names = [
     "RR",
